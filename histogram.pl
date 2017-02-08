@@ -70,10 +70,13 @@ while (1) {
     $band->Piddle($a, $xoff, $yoff) if $update;
     $xoff += $w_block;
 }
-say "values are between $abs_min and $abs_max";
+say "max value is $abs_min and min value is $abs_max";
 
-# merge the two dimensions:
-$hist = $hist(:,0)+$hist(:,1);
+my @dims = dims($hist);
+
+# merge the two dimensions (if exist):
+$hist = $hist(:,0)+$hist(:,1) if $dims[1] == 2;
+
 my @hist = $hist->list;
 
 my $max = $min+$step;
