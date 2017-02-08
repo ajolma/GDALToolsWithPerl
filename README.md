@@ -14,3 +14,7 @@ Compute the histogram of a raster dataset. Output will be something like:
 (y .. abs_max]: nn values
 m nodata values
 ```
+
+dijkstra.pl dest space output cell_size
+
+Compute the distance to the closest destination cell in a given space.

@@ -15,7 +15,7 @@ for my $arg (@ARGV) {
         $_ = $arg, last unless defined $_;
     }
 }
-die "usage: perl gdal_histogram.pl filename step min numbins" unless defined $numbins;
+die "usage: perl histogram.pl filename step min numbins" unless defined $numbins;
 my $access = 'ReadOnly';
 my $update = $access eq 'Update';
 my $band = Geo::GDAL::Open(Name => $filename, Access => $access)->Band();
