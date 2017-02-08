@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 use Modern::Perl;
 use Geo::GDAL;
 use Hash::PriorityQueue;
@@ -6,7 +8,7 @@ use Term::ProgressBar;
 my ($dest, $space, $output, $cell_size);
 my $use_log;
 for my $arg (@ARGV) {
-    if ($arg =~ /^-([a-z])/) {
+    if ($arg =~ /^-([a-z])$/) {
         $use_log = 1 if $1 eq 'l';
         next;
     }

@@ -1,3 +1,5 @@
+#!/usr/bin/env perl
+
 use Modern::Perl;
 use Term::ProgressBar;
 use Geo::GDAL;
@@ -16,6 +18,7 @@ for my $arg (@ARGV) {
     }
 }
 die "usage: perl histogram.pl filename step min numbins" unless defined $numbins;
+die "numbins must be greater than zero " unless $numbins > 0;
 my $access = 'ReadOnly';
 my $update = $access eq 'Update';
 my $band = Geo::GDAL::Open(Name => $filename, Access => $access)->Band();
@@ -60,37 +63,40 @@ while (1) {
         $bad += $nbad;
         if ($has_stats) {
             $abs_min = smaller($abs_min, $stats[3]);
-            $abs_max = bigger($abs_max, $stats[4]);
+            $abs_max = greater($abs_max, $stats[4]);
         }
     }
 
     $band->Piddle($a, $xoff, $yoff) if $update;
     $xoff += $w_block;
 }
+say "values are between $abs_min and $abs_max";
 
 # merge the two dimensions:
 $hist = $hist(:,0)+$hist(:,1);
 my @hist = $hist->list;
 
-my $max = $min;
+my $max = $min+$step;
 $min = $abs_min;
 my $lower_boundary = '[';
+my $sum = 0;
 for my $i (0..$#hist) {
+    $sum += $hist[$i];
+    $max = $abs_max if $i == $#hist && $abs_max > $max;
     say "$lower_boundary$min .. $max]: $hist[$i] values";
     $lower_boundary = '(';
     $min = $max;
-    if ($i == $#hist) {
-        $max = $abs_max;
-    } else {
-        $max += $step;
-    }
+    $max += $step;
 }
 say "$bad nodata values";
+$sum += $bad;
+say STDERR "Whoa! something is wrong got $sum values out of ",$w_band*$h_band
+    if $sum != $w_band*$h_band;
 
 sub smaller {
     return $_[0] < $_[1] ? $_[0] : $_[1];
 }
 
-sub bigger {
+sub greater {
     return $_[0] > $_[1] ? $_[0] : $_[1];
 }
