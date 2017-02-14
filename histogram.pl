@@ -70,7 +70,7 @@ while (1) {
     $band->Piddle($a, $xoff, $yoff) if $update;
     $xoff += $w_block;
 }
-say "max value is $abs_min and min value is $abs_max";
+say "min value is $abs_min and max value is $abs_max";
 
 my @dims = dims($hist);
 
