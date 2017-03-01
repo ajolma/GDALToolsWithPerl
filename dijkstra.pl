@@ -1,65 +1,121 @@
 #!/usr/bin/env perl
 
+# Description for QGIS Perl Processing Provider Plugin:
+# QP4: Name: Distance to destination (in raster)
+# QP4: Group: Optimization
+# QP4: Input: Raster,Destinations,Destinations
+# QP4: Input: Raster,Space,Space
+# QP4: Output: Raster,Distances,Distances to destinations using space
+# QP4: Input: Extent,Extent,Extent (if not set the intersection of Destinations and Space is used)
+
 use Modern::Perl;
-use Geo::GDAL;
+use Geo::GDAL qw/:all/;
 use Hash::PriorityQueue;
 use Term::ProgressBar;
 
-my ($dest, $space, $output, $cell_size);
+my ($dest, $space, $output, $extent);
+my $quiet;
 my $use_log;
+my $overwrite;
 for my $arg (@ARGV) {
     if ($arg =~ /^-([a-z])$/) {
+        $quiet = 1 if $1 eq 'q';
         $use_log = 1 if $1 eq 'l';
+        $overwrite = 1 if $1 eq 'o';
         next;
     }
-    for ($dest, $space, $output, $cell_size) {
+    for ($dest, $space, $output, $extent) {
         $_ = $arg, last unless defined $_;
     }
 }
-die "usage: perl dijkstra.pl dest space output cell_size" unless defined $cell_size;
-die "will not overwrite $output" if -e $output;
+die "usage: perl dijkstra.pl dest space output [extent]" unless $output;
+die "will not overwrite $output" if -e $output && !$overwrite;
+
+$dest = {dataset => Open(Name => $dest, Type => 'Raster')};
+$space = {dataset => Open(Name => $space, Type => 'Raster')};
+
+# todo: check north-up
+
+# shrink extent to be completely inside of both input rasters
+# thus private xoff and yoff of both are non-negative
+if ($extent) {
+    $extent =~ s/^"//;
+    $extent =~ s/"$//;
+    my @e = split(/,/, $extent);
+    die "The extent must be xmin,ymin,xmax,ymax" unless @e == 4;
+    $extent = Geo::GDAL::Extent->new(@e);
+    $extent = $dest->{dataset}->Extent->Overlap($extent) if $extent;
+    $extent = $space->{dataset}->Extent->Overlap($extent) if $extent;
+} else {
+    $extent = $space->{dataset}->Extent->Overlap($dest->{dataset}->Extent);
+}
+die "There is no overlap." unless $extent;
+
+my $cell_size;
+{
+    my @cell_sizes;
+    for ($dest, $space) {
+        $_->{band} = $_->{dataset}->Band;
+        my @size = $_->{dataset}->Size;
+        $_->{size} = \@size;
+        my $e = $_->{dataset}->Extent;
+        my $dw = ($e->[2]-$e->[0])/$size[0];
+        my $dh = ($e->[3]-$e->[1])/$size[1];
+        $_->{xoff} = int(($extent->[0] - $e->[0]) / $dw + 0.5);
+        $_->{yoff} = int(($e->[3] - $extent->[3]) / $dh + 0.5); # assuming ymax is at row 0
+        push @cell_sizes, $dw;
+        push @cell_sizes, $dh;
+    }
+    my @sizes = @cell_sizes;
+    $cell_size = shift @cell_sizes;
+    for my $size (@cell_sizes) {
+        die "Cells are not rectangular or not of same size in input rasters" 
+            unless $cell_size-$size < 0.001;
+    }
+}
+
+my @size = (
+    POSIX::ceil(($extent->[2]-$extent->[0])/$cell_size), 
+    POSIX::ceil(($extent->[3]-$extent->[1])/$cell_size)
+    );
+
+$output = Geo::GDAL::Driver('GTiff')->Create(
+    Name => $output, 
+    Width => $size[0],
+    Height => $size[1],
+    Bands => 1,
+    Type => 'Float32'
+    );
+$output->GeoTransform(Geo::GDAL::GeoTransform->new($extent->[0], $cell_size, 0, $extent->[3], 0, -$cell_size));
+$output->SpatialReference($dest->{dataset}->SpatialReference);
 
 $|++ if $use_log;
 
-my ($w, $h, $costs, $unvisited, $count, $current) = prepare($dest, $space);
+my ($costs, $unvisited, $count, $current) = prepare();
 
 dijkstra($costs, $unvisited, $count, $current);
 
-create_cost_to_go($costs, $w, $h, $space, $output);
+create_cost_to_go();
 
 sub create_cost_to_go {
-    my ($costs, $W, $H, $space, $output) = @_;
-
-    my $ds = Geo::GDAL::Open($space);
-
-    my $out = Geo::GDAL::Driver('GTiff')->Create(
-        Name => $output, 
-        Width => $w, 
-        Height => $h, 
-        Bands => 1,
-        Type => 'Float32'
-        )->Band;
-
-    $out->Dataset->GeoTransform($ds->GeoTransform);
-    $out->Dataset->SpatialReference($ds->SpatialReference);
-
-    say "Create output:";
-    my $progress = $use_log ? 0 : Term::ProgressBar->new({count => $H});
-    my $size = 1;
-    my($xoff,$yoff,$w,$h) = (0,0,255,255);
+    say "Create output:" unless $quiet;
+    $output = $output->Band;
+    my $progress = ($use_log||$quiet) ? 0 : Term::ProgressBar->new({count => $size[1]});
+    my($xoff,$yoff,$w,$h) = (0,0,256,256);
     while (1) {
-        if ($xoff >= $W) {
+        if ($xoff >= $size[0]) {
             $xoff = 0;
             $yoff += $h;
-            if ($use_log) {
-                say "$yoff/$H";
+            if ($quiet) {
+            } elsif ($use_log) {
+                say "$yoff/$size[1]";
             } else {
-                $progress->update(smaller($yoff,$H));
+                $progress->update(smaller($yoff,$size[1]));
             }
-            last if $yoff >= $H;
+            last if $yoff >= $size[1];
         }
-        my $w_real = smaller($W-$xoff,$w);
-        my $h_real = smaller($H-$yoff,$h);
+        my $w_real = smaller($size[0]-$xoff,$w);
+        my $h_real = smaller($size[1]-$yoff,$h);
         
         my $tile = [];
         
@@ -78,7 +134,7 @@ sub create_cost_to_go {
             }
         }
 
-        $out->WriteTile($tile, $xoff, $yoff);
+        $output->WriteTile($tile, $xoff, $yoff);
         
         $xoff += $w;
     }
@@ -88,8 +144,8 @@ sub create_cost_to_go {
 sub dijkstra {
     my ($costs, $unvisited, $count, $current) = @_;
 
-    say "Compute cost-to-gos:";
-    my $progress = $use_log ? 0 : Term::ProgressBar->new({count => $count});
+    say "Compute cost-to-gos:" unless $quiet;
+    my $progress = ($use_log||$quiet) ? 0 : Term::ProgressBar->new({count => $count});
     my @current = @$current;
     my $d = 0;
 
@@ -106,7 +162,8 @@ sub dijkstra {
     while (1) {
         $costs->{$current[0]}{$current[1]} = $d;
         $my_count++;
-        if ($use_log) {
+        if ($quiet) {
+        } elsif ($use_log) {
             say "$my_count/$count" if $my_count % 100 == 0;
         } else {
             $progress->update($my_count);
@@ -149,13 +206,6 @@ sub dijkstra {
 }
 
 sub prepare {
-    my ($dest_d, $space_d) = @_;
-
-    my $dest_b = Geo::GDAL::Open($dest_d)->Band;
-    my $space_b = Geo::GDAL::Open($space_d)->Band;
-    my ($W, $H) = $space_b->Size;
-    my @s = $dest_b->Size;
-    die "size don't match" if $W != $s[0] || $H != $s[1];
 
     my %costs;
     my $unvisited = Hash::PriorityQueue->new;
@@ -163,36 +213,36 @@ sub prepare {
     
     my @current;
     
-    say "Prepare input data:";
-    my $progress = $use_log ? 0 : Term::ProgressBar->new({count => $H});
+    say "Prepare input data:" unless $quiet;
+    my $progress = ($use_log||$quiet) ? 0 : Term::ProgressBar->new({count => $size[1]});
     my $size = 1;
-    my($xoff,$yoff,$w,$h) = (0,0,255,255);
+    my($xoff,$yoff,$w,$h) = (0,0,256,256);
     while (1) {
-        if ($xoff >= $W) {
+               
+        if ($xoff >= $size[0]) {
             $xoff = 0;
             $yoff += $h;
-            if ($use_log) {
-                say "$yoff/$H";
+            if ($quiet) {
+            } elsif ($use_log) {
+                say "$yoff/$size[1]";
             } else {
-                $progress->update(smaller($yoff,$H));
+                $progress->update(smaller($yoff,$size[1]));
             }
-            last if $yoff >= $H;
+            last if $yoff >= $size[1];
         }
-        my $w_real = smaller($W-$xoff,$w);
-        my $h_real = smaller($H-$yoff,$h);
-        
-        my $dest = $dest_b->ReadTile($xoff, $yoff, $w_real, $h_real);
-        my $space = $space_b->ReadTile($xoff, $yoff, $w_real, $h_real);
-        
-        for my $y (0..$h_real-1) {
-            for my $x (0..$w_real-1) {
 
-                next unless $space->[$y][$x];
+        my $d = read_from_band($dest, $xoff, $yoff, $w, $h);
+        my $s = read_from_band($space, $xoff, $yoff, $w, $h);
+        
+        for my $y (0..$h-1) {
+            for my $x (0..$w-1) {
+
+                next unless $s->[$y][$x];
 
                 my $xr = $xoff+$x;
                 my $yr = $yoff+$y;
                 
-                if ($dest->[$y][$x]) {
+                if ($d->[$y][$x]) {
                     $unvisited->insert("$xr,$yr", 0);
                     @current = ($xr,$yr) unless @current;
                     $count++;
@@ -207,7 +257,16 @@ sub prepare {
         $xoff += $w;
     }
 
-    return ($W, $H, \%costs, $unvisited, $count, \@current);
+    return (\%costs, $unvisited, $count, \@current);
+}
+
+sub read_from_band {
+    my ($band, $xoff, $yoff, $w, $h) = @_;
+    $xoff = $band->{xoff}+$xoff;
+    $yoff = $band->{yoff}+$yoff;
+    $w = smaller($band->{size}[0]-$xoff,$w);
+    $h = smaller($band->{size}[1]-$yoff,$h);
+    return $band->{band}->ReadTile($xoff, $yoff, $w, $h);
 }
 
 sub smaller {
