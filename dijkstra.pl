@@ -11,16 +11,15 @@
 use Modern::Perl;
 use Geo::GDAL qw/:all/;
 use Hash::PriorityQueue;
-use Term::ProgressBar;
 
 my ($dest, $space, $output, $extent);
 my $quiet;
-my $use_log;
+my $log_to;
 my $overwrite;
 for my $arg (@ARGV) {
     if ($arg =~ /^-([a-z])$/) {
         $quiet = 1 if $1 eq 'q';
-        $use_log = 1 if $1 eq 'l';
+        $log_to = 'stdout' if $1 eq 'l';
         $overwrite = 1 if $1 eq 'o';
         next;
     }
@@ -89,7 +88,7 @@ $output = Geo::GDAL::Driver('GTiff')->Create(
 $output->GeoTransform(Geo::GDAL::GeoTransform->new($extent->[0], $cell_size, 0, $extent->[3], 0, -$cell_size));
 $output->SpatialReference($dest->{dataset}->SpatialReference);
 
-$|++ if $use_log;
+$|++ if $log_to;
 
 my ($costs, $unvisited, $count, $current) = prepare();
 
@@ -97,21 +96,47 @@ dijkstra($costs, $unvisited, $count, $current);
 
 create_cost_to_go();
 
+{
+    package Progress;
+    use Modern::Perl;
+    use Term::ProgressBar;
+    sub new {
+        my ($class, $self) = @_;
+        if ($self->{quiet}) {
+        } elsif ($self->{log_to}) {
+            $self->{counter} = 0;
+        } else {
+            return Term::ProgressBar->new({count => $self->{count}});
+        }
+        bless $self, $class;
+    }
+    sub update {
+        my ($self, $value) = @_;
+        return if $self->{quiet};
+        if ($self->{log_to}) {
+            my $c = int($value/$self->{count}*100);
+            if ($c > $self->{counter}) {
+                if ($self->{log_to} eq 'stdout') {
+                    say "$c/100";
+                } else {
+                    say STDERR "$c/100";
+                }
+                $self->{counter} = $c;
+            }
+        }
+    }
+}
+
 sub create_cost_to_go {
     say "Create output:" unless $quiet;
     $output = $output->Band;
-    my $progress = ($use_log||$quiet) ? 0 : Term::ProgressBar->new({count => $size[1]});
+    my $progress = Progress->new({quiet => $quiet, count => $size[1], log_to => $log_to});
     my($xoff,$yoff,$w,$h) = (0,0,256,256);
     while (1) {
         if ($xoff >= $size[0]) {
             $xoff = 0;
             $yoff += $h;
-            if ($quiet) {
-            } elsif ($use_log) {
-                say "$yoff/$size[1]";
-            } else {
-                $progress->update(smaller($yoff,$size[1]));
-            }
+            $progress->update(smaller($yoff,$size[1]));
             last if $yoff >= $size[1];
         }
         my $w_real = smaller($size[0]-$xoff,$w);
@@ -145,7 +170,7 @@ sub dijkstra {
     my ($costs, $unvisited, $count, $current) = @_;
 
     say "Compute cost-to-gos:" unless $quiet;
-    my $progress = ($use_log||$quiet) ? 0 : Term::ProgressBar->new({count => $count});
+    my $progress = Progress->new({quiet => $quiet, count => $count, log_to => $log_to});
     my @current = @$current;
     my $d = 0;
 
@@ -162,12 +187,7 @@ sub dijkstra {
     while (1) {
         $costs->{$current[0]}{$current[1]} = $d;
         $my_count++;
-        if ($quiet) {
-        } elsif ($use_log) {
-            say "$my_count/$count" if $my_count % 100 == 0;
-        } else {
-            $progress->update($my_count);
-        }
+        $progress->update($my_count);
         for my $x ($current[0]-1..$current[0]+1) {
             for my $y ($current[1]-1..$current[1]+1) {
                 my $u = $costs->{$x}{$y};
@@ -214,7 +234,7 @@ sub prepare {
     my @current;
     
     say "Prepare input data:" unless $quiet;
-    my $progress = ($use_log||$quiet) ? 0 : Term::ProgressBar->new({count => $size[1]});
+    my $progress = Progress->new({quiet => $quiet, count => $size[1], log_to => $log_to});
     my $size = 1;
     my($xoff,$yoff,$w,$h) = (0,0,256,256);
     while (1) {
@@ -222,12 +242,7 @@ sub prepare {
         if ($xoff >= $size[0]) {
             $xoff = 0;
             $yoff += $h;
-            if ($quiet) {
-            } elsif ($use_log) {
-                say "$yoff/$size[1]";
-            } else {
-                $progress->update(smaller($yoff,$size[1]));
-            }
+            $progress->update(smaller($yoff,$size[1]));
             last if $yoff >= $size[1];
         }
 
