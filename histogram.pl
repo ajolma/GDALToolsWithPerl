@@ -46,6 +46,16 @@ while (1) {
 
     my @stats = stats($piddle); # 3 and 4 are min and max
     my $has_stats = not isbad($stats[3]);
+
+    if ($has_stats) {
+        if (defined $abs_min) {
+            $abs_min = smaller($abs_min, $stats[3]);
+            $abs_max = greater($abs_max, $stats[4]);
+        } else {
+            $abs_min = $stats[3];
+            $abs_max = $stats[4];
+        }
+    }
     
     #for docs see http://pdl.perl.org/PDLdocs/Primitive.html#histogram
     my $h = histogram($piddle, $step, $min, $numbins);
@@ -57,23 +67,20 @@ while (1) {
     unless (defined $hist) {
         $hist = $h;
         $bad = $nbad;
-        if ($has_stats) {
-            $abs_min = $stats[3];
-            $abs_max = $stats[4];
-        }
     } else {
         $hist += $h;
         $bad += $nbad;
-        if ($has_stats) {
-            $abs_min = smaller($abs_min, $stats[3]);
-            $abs_max = greater($abs_max, $stats[4]);
-        }
     }
 
     $band->Piddle($a, $xoff, $yoff) if $update;
     $xoff += $w_block;
 }
-say "min value is $abs_min and max value is $abs_max";
+
+if (defined $abs_min) {
+    say "min value is $abs_min and max value is $abs_max";
+} else {
+    say "There is only nodata values in the raster.";
+}
 
 my @hist = $hist->list;
 
