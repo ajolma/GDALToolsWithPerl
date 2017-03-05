@@ -51,6 +51,9 @@ while (1) {
     my $h = histogram($piddle, $step, $min, $numbins);
     my $nbad = nbad($piddle);
 
+    # h has per row data, we need to sum the rows
+    $h = sumover $h->xchg(0,1);
+
     unless (defined $hist) {
         $hist = $h;
         $bad = $nbad;
@@ -71,11 +74,6 @@ while (1) {
     $xoff += $w_block;
 }
 say "min value is $abs_min and max value is $abs_max";
-
-my @dims = dims($hist);
-
-# merge the two dimensions (if exist):
-$hist = $hist(:,0)+$hist(:,1) if $dims[1] == 2;
 
 my @hist = $hist->list;
 
