@@ -17,13 +17,47 @@ for my $arg (@ARGV) {
         $_ = $arg, last unless defined $_;
     }
 }
-die "usage: perl histogram.pl filename step min numbins" unless defined $numbins;
+die "usage: perl histogram.pl [-q] filename [step] [min] [numbins]" unless defined $filename;
+my $only_filename = !defined($step);
+$step //= 1;
+$min //= 0;
+$numbins //= 1;
 die "numbins must be greater than zero " unless $numbins > 0;
-my $access = 'ReadOnly';
-my $update = $access eq 'Update';
-my $band = Geo::GDAL::Open(Name => $filename, Access => $access)->Band();
-
+my $band = Geo::GDAL::Open(Name => $filename, Access => 'ReadOnly')->Band();
 my ($w_band, $h_band) = $band->Size;
+my $nodata = $band->NoDataValue;
+my $dt = $band->DataType;
+unless ($quiet) {
+    say "The data type of the raster is $dt.";
+    if (defined $nodata) {
+        say "The NoData value is $nodata.";
+    } else {
+        say "The NoData value is not defined.";
+    }
+}
+
+if ($Geo::GDAL::VERSION >= 2.02 and ($dt eq 'Byte' or $dt =~ /^U*Int/) and $only_filename) {
+    my $bar = $quiet ? 0 : Term::ProgressBar->new({count => 1});
+    my $counts = $band->ClassCounts(
+        sub 
+        {
+            my ($progress) = @_;
+            $bar->update($progress) unless $quiet;
+            return 1;
+        }
+        );
+    my $sum = 0;
+    for my $class (sort {$a<=>$b} keys %$counts) {
+        my $nd = '';
+        $nd = " (NoData)" if defined $nodata && $class == $nodata;
+        say "$class $counts->{$class}$nd";
+        $sum += $counts->{$class};
+    }
+    say STDERR "Whoa! something is wrong got $sum values out of ",$w_band*$h_band
+        if $sum != $w_band*$h_band;
+    exit;
+}
+
 my $progress = $quiet ? 0 : Term::ProgressBar->new({count => $h_band});
 my ($w_block, $h_block) = $band->GetBlockSize;
 my ($xoff, $yoff) = (0,0);
@@ -72,14 +106,15 @@ while (1) {
         $bad += $nbad;
     }
 
-    $band->Piddle($a, $xoff, $yoff) if $update;
     $xoff += $w_block;
 }
 
-if (defined $abs_min) {
-    say "min value is $abs_min and max value is $abs_max";
-} else {
-    say "There is only nodata values in the raster.";
+unless ($quiet) {
+    if (defined $abs_min) {
+        say "min value is $abs_min and max value is $abs_max";
+    } else {
+        say "There are only nodata values in the raster.";
+    }
 }
 
 my @hist = $hist->list;
@@ -96,7 +131,7 @@ for my $i (0..$#hist) {
     $min = $max;
     $max += $step;
 }
-say "$bad nodata values";
+say "NoData: $bad values" if defined $nodata;
 $sum += $bad;
 say STDERR "Whoa! something is wrong got $sum values out of ",$w_band*$h_band
     if $sum != $w_band*$h_band;
