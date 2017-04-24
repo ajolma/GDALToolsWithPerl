@@ -92,6 +92,8 @@ $|++ if $log_to;
 
 my ($costs, $unvisited, $count, $current) = prepare();
 
+die "No destination cells found!" unless @$current;
+
 dijkstra($costs, $unvisited, $count, $current);
 
 create_cost_to_go();
